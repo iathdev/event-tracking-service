@@ -1,0 +1,9 @@
+.env
+.idea/
+.vscode/
+output
+event-tracking-service
+vendor/
+.agents/
+skills-lock.json
+CLAUDE.md

@@ -1,0 +1,65 @@
+include:
+  - project: "cicd/common-templates"
+    ref: "main"
+    file: "docker.yml"
+  - project: "cicd/common-templates"
+    ref: "main"
+    file: "gitops.yml"
+
+
+
+stages:
+  - build-docker-image
+  - build-dev
+  - dev
+  - deploy-staging
+  - deploy-production
+
+Build Docker Image:
+  extends: .build-docker
+  stage: build-docker-image
+  before_script:
+    - go mod download &&  go mod verify && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o ./output ./main.go  && chmod 700 ./output
+  environment: "dev"
+  rules:
+    - if: '$CI_COMMIT_TAG == null'
+      when: never
+    - if: '$CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH  && $CI_COMMIT_TAG =~ /^dev_[0-9]+(?:.[0-9]+)+$/'
+
+
+Deploy to Dev:
+  stage: dev
+  extends: .gitops
+  rules:
+    - if: '$CI_COMMIT_TAG == null'
+      when: never
+    - if: '$CI_COMMIT_TAG =~ /^dev_[0-9]+(?:.[0-9]+)+$/'
+  environment:
+    name: develop
+  needs: ['Build Docker Image']
+
+Deploy to Staging:
+  stage: deploy-staging
+  extends: .gitops
+  rules:
+    - if: '$CI_COMMIT_TAG == null'
+      when: never
+    - if: '$CI_COMMIT_TAG =~ /^staging_[0-9]+(?:.[0-9]+)+$/'
+  environment:
+    name: staging
+  needs: ['Build Docker Image']
+
+
+Deploy to Prod:
+  stage: deploy-production
+  tags:
+    - node, docker
+  dependencies: []
+  extends: .gitops
+  rules:
+    - if: '$CI_COMMIT_TAG == null'
+      when: never
+    - if: '$CI_COMMIT_TAG =~ /^live_[0-9]+(?:.[0-9]+)+$/'
+  environment:
+    name: prod
+  needs: ['Build Docker Image']
