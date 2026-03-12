@@ -6,6 +6,7 @@ import (
 )
 
 type coreResponse struct {
+	Success  bool        `json:"success"`
 	Message  string      `json:"message"`
 	Error    interface{} `json:"error,omitempty"`
 	Data     interface{} `json:"data,omitempty"`
@@ -14,6 +15,7 @@ type coreResponse struct {
 
 func WriteSuccessResponse(ctx *gin.Context, message string, data interface{}) {
 	res := &coreResponse{
+		Success: true,
 		Message: message,
 		Data:    data,
 	}
@@ -23,6 +25,7 @@ func WriteSuccessResponse(ctx *gin.Context, message string, data interface{}) {
 
 func WriteErrorResponse(c *gin.Context, message string, err interface{}) {
 	res := &coreResponse{
+		Success: false,
 		Message: message,
 		Error:   err,
 	}
@@ -32,6 +35,7 @@ func WriteErrorResponse(c *gin.Context, message string, err interface{}) {
 
 func WriteErrorResponseWithCode(c *gin.Context, message string, err interface{}, code int) {
 	res := &coreResponse{
+		Success: false,
 		Message: message,
 		Error:   err,
 	}
@@ -41,6 +45,7 @@ func WriteErrorResponseWithCode(c *gin.Context, message string, err interface{},
 
 func WriteErrorUnauthorizedResponse(c *gin.Context, message string, err interface{}) {
 	res := &coreResponse{
+		Success: false,
 		Message: message,
 		Error:   err,
 	}
@@ -50,6 +55,7 @@ func WriteErrorUnauthorizedResponse(c *gin.Context, message string, err interfac
 
 func WriteErrorValidatorResponse(c *gin.Context, message string, err interface{}) {
 	res := &coreResponse{
+		Success: false,
 		Message: message,
 		Error:   err,
 	}
@@ -59,6 +65,7 @@ func WriteErrorValidatorResponse(c *gin.Context, message string, err interface{}
 
 func WriteSuccessWithPaginate(ctx *gin.Context, message string, data interface{}, meta interface{}) {
 	res := &coreResponse{
+		Success:  true,
 		Message:  message,
 		Data:     data,
 		MetaData: meta,

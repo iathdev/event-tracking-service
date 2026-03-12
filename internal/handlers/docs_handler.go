@@ -32,9 +32,9 @@ func (h *DocsHandler) ScalarUI(c *gin.Context) {
 }
 
 func (h *DocsHandler) OpenAPISpec(c *gin.Context) {
-	content, err := os.ReadFile("docs/openapi.yaml")
+	content, err := os.ReadFile("docs/api/openapi.yaml")
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read OpenAPI spec"})
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "Failed to read OpenAPI spec"})
 		return
 	}
 

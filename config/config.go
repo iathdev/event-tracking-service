@@ -8,6 +8,8 @@ import (
 	"github.com/joho/godotenv"
 )
 
+var DefaultSensitiveFields = []string{"password", "token", "secret", "credit_card"}
+
 type DBConfig struct {
 	Host        string
 	Port        int
@@ -69,14 +71,23 @@ type SentryConfig struct {
 	Debug            bool
 }
 
+type EventBufferConfig struct {
+	QueueKey        string
+	DeadLetterKey   string
+	BatchSize       int
+	MaxRetries      int
+	SensitiveFields []string // Fields to strip from properties before storing
+}
+
 type Config struct {
-	DB        DBConfig
-	Redis     RedisConfig
-	Server    ServerConfig
-	Scheduler SchedulerConfig
-	Log       LogConfig
-	Tracing   TracingConfig
-	Sentry    SentryConfig
+	DB          DBConfig
+	Redis       RedisConfig
+	Server      ServerConfig
+	Scheduler   SchedulerConfig
+	EventBuffer EventBufferConfig
+	Log         LogConfig
+	Tracing     TracingConfig
+	Sentry      SentryConfig
 }
 
 // ObservabilityConfig returns a unified observability configuration
@@ -162,8 +173,15 @@ func NewConfig() *Config {
 			Port: common.GetEnv("APP_PORT", "8080"),
 		},
 		Scheduler: SchedulerConfig{
-			ProcessInterval: time.Duration(common.GetEnvInt("SCHEDULER_PROCESS_INTERVAL_MINUTES", 2)) * time.Minute,
-			ProcessTimeout:  time.Duration(common.GetEnvInt("SCHEDULER_PROCESS_TIMEOUT_MINUTES", 1)) * time.Minute,
+			ProcessInterval: time.Duration(common.GetEnvInt("SCHEDULER_PROCESS_INTERVAL_SECONDS", 60)) * time.Second,
+			ProcessTimeout:  time.Duration(common.GetEnvInt("SCHEDULER_PROCESS_TIMEOUT_SECONDS", 60)) * time.Second,
+		},
+		EventBuffer: EventBufferConfig{
+			QueueKey:        common.GetEnv("EVENT_BUFFER_QUEUE_KEY", "event_tracking:events"),
+			DeadLetterKey:   common.GetEnv("EVENT_BUFFER_DEAD_LETTER_KEY", "event_tracking:dead_letter"),
+			BatchSize:       common.GetEnvInt("EVENT_BUFFER_BATCH_SIZE", 1500),
+			MaxRetries:      common.GetEnvInt("EVENT_BUFFER_MAX_RETRIES", 3),
+			SensitiveFields: DefaultSensitiveFields,
 		},
 		Log: LogConfig{
 			Level:           common.GetEnv("LOG_LEVEL", "info"),

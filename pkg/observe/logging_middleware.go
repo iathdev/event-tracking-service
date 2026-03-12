@@ -85,6 +85,7 @@ func RecoveryMiddleware(logger *zap.Logger) gin.HandlerFunc {
 					zap.Stack("stacktrace"),
 				)
 				c.AbortWithStatusJSON(500, gin.H{
+					"success": false,
 					"message": "Internal Server Error",
 					"error":   err,
 				})

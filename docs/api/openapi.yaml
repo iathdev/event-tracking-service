@@ -1,0 +1,463 @@
+openapi: 3.0.3
+info:
+  title: Event Tracking Service API
+  description: >
+    Asynchronous event tracking service for the Prep B2B Exam Platform (IELTS & TOEIC).
+    Events are accepted via HTTP API, buffered in Redis, and batch-inserted into PostgreSQL.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+
+tags:
+  - name: Events
+    description: Event tracking endpoints
+  - name: Monitoring
+    description: Internal monitoring endpoints
+  - name: Health
+    description: Health check
+
+paths:
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Health check
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: OK
+
+  /api/v1/events:
+    post:
+      tags:
+        - Events
+      summary: Submit a single event
+      description: >
+        Validates the event, enriches metadata (IP, User-Agent), pushes to Redis buffer,
+        and returns 200 OK. Processing is asynchronous.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTrackingEventRequest"
+            examples:
+              login:
+                summary: "Event #1 - Login thành công"
+                value:
+                  event: log_in_success
+                  screen: login
+                  user_id: 456
+                  properties:
+                    user_name: "candidate@example.com"
+                  occurred_at: "2026-03-16T10:00:00Z"
+              your_test:
+                summary: "Event #2 - Click action your test"
+                value:
+                  event: click_action_your_test
+                  screen: your_tests
+                  user_id: 456
+                  batch_id: 123
+                  properties:
+                    batch_id: 123
+                    batch_candidate_id: 789
+                    action_your_test: "Start test"
+                  occurred_at: "2026-03-16T10:00:00Z"
+              test_direction:
+                summary: "Event #3 - Click Continue tại Test Direction"
+                value:
+                  event: click_action_test_direction
+                  screen: test_direction
+                  user_id: 456
+                  batch_id: 123
+                  properties:
+                    batch_id: 123
+                    batch_candidate_id: 789
+                    product_line: "IELTS"
+                    action_test_direction: continue
+                  occurred_at: "2026-03-16T10:00:00Z"
+              regulation:
+                summary: "Event #4 - Đồng ý Exam Regulation"
+                value:
+                  event: click_agree_exam_regulation
+                  screen: regulation
+                  user_id: 456
+                  batch_id: 123
+                  properties:
+                    batch_id: 123
+                    batch_candidate_id: 789
+                    product_line: "IELTS"
+                    action_regulation: agree
+                  occurred_at: "2026-03-16T10:00:00Z"
+              check_audio:
+                summary: "Event #5 - Continue tại Check Audio"
+                value:
+                  event: click_continue_audio
+                  screen: check_audio
+                  user_id: 456
+                  batch_id: 123
+                  properties:
+                    batch_id: 123
+                    batch_candidate_id: 789
+                    product_line: "IELTS"
+                    skill: "Listening"
+                  occurred_at: "2026-03-16T10:00:00Z"
+              submit_test_skill:
+                summary: "Event #21 - User submit test skill"
+                value:
+                  event: submit_test_skill
+                  screen: submit_test_skill
+                  user_id: 456
+                  batch_id: 123
+                  properties:
+                    batch_id: 123
+                    batch_candidate_id: 789
+                    product_line: "IELTS"
+                    skill: "Reading"
+                    submission_skill_id: "abc-123"
+                    submit_by: "Candidate"
+                  occurred_at: "2026-03-16T10:00:00Z"
+              anti_cheating:
+                summary: "Event #23 - Tracking cheating"
+                value:
+                  event: tracking_cheating
+                  screen: listening_test
+                  user_id: 456
+                  batch_id: 123
+                  properties:
+                    batch_id: 123
+                    batch_candidate_id: 789
+                    product_line: "TOEIC"
+                    skill: "Listening"
+                    submission_skill_id: "abc-123"
+                    anti_cheating_type: "tab switching"
+                    time_of_cheating: "2026-03-16T10:00:00Z"
+              tracking_internet:
+                summary: "Event #24 - Tracking internet"
+                value:
+                  event: tracking_internet
+                  screen: reading_test
+                  user_id: 456
+                  batch_id: 123
+                  properties:
+                    batch_id: 123
+                    batch_candidate_id: 789
+                    product_line: "IELTS"
+                    skill: "Reading"
+                    submission_skill_id: "abc-123"
+                    network_error: "No internet"
+                  occurred_at: "2026-03-16T10:00:00Z"
+              complete_test:
+                summary: "Event #28 - Complete test"
+                value:
+                  event: complete_test
+                  screen: end_test
+                  user_id: 456
+                  batch_id: 123
+                  properties:
+                    batch_id: 123
+                    batch_candidate_id: 789
+                    product_line: "IELTS"
+                    submission_id: "sub-456"
+                    submit_by: "Candidate"
+                  occurred_at: "2026-03-16T10:00:00Z"
+      responses:
+        "200":
+          description: Event accepted for async processing
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+              example:
+                success: true
+                message: Event accepted
+        "422":
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                success: false
+                message: Validation failed
+                error: "Key: 'CreateTrackingEventRequest.Event' Error:Field validation for 'Event' failed on the 'required' tag"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                success: false
+                message: Failed to accept event
+
+  /api/v1/events/batch:
+    post:
+      tags:
+        - Events
+      summary: Submit multiple events (max 100)
+      description: >
+        Accepts a batch of events (1-100), enriches metadata for each,
+        pushes all to Redis buffer via pipeline, and returns 200 OK.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateBatchTrackingEventRequest"
+            examples:
+              batch_exam_flow:
+                summary: "Batch - Flow bắt đầu thi (Test Direction + Regulation + Check Audio)"
+                value:
+                  events:
+                    - event: click_action_test_direction
+                      screen: test_direction
+                      user_id: 456
+                      batch_id: 123
+                      properties:
+                        batch_id: 123
+                        batch_candidate_id: 789
+                        product_line: "IELTS"
+                        action_test_direction: continue
+                      occurred_at: "2026-03-16T10:00:00Z"
+                    - event: click_agree_exam_regulation
+                      screen: regulation
+                      user_id: 456
+                      batch_id: 123
+                      properties:
+                        batch_id: 123
+                        batch_candidate_id: 789
+                        product_line: "IELTS"
+                        action_regulation: agree
+                      occurred_at: "2026-03-16T10:00:05Z"
+                    - event: click_continue_audio
+                      screen: check_audio
+                      user_id: 456
+                      batch_id: 123
+                      properties:
+                        batch_id: 123
+                        batch_candidate_id: 789
+                        product_line: "IELTS"
+                        skill: "Listening"
+                      occurred_at: "2026-03-16T10:00:10Z"
+              batch_test_room:
+                summary: "Batch - Trong phòng thi (Question navigation + Note + Submit)"
+                value:
+                  events:
+                    - event: click_question
+                      screen: reading_test
+                      user_id: 456
+                      batch_id: 123
+                      properties:
+                        batch_id: 123
+                        batch_candidate_id: 789
+                        product_line: "IELTS"
+                        skill: "Reading"
+                        submission_skill_id: "abc-123"
+                        action_question: "next"
+                      occurred_at: "2026-03-16T10:05:00Z"
+                    - event: note_question_ielts
+                      screen: reading_test
+                      user_id: 456
+                      batch_id: 123
+                      properties:
+                        batch_id: 123
+                        batch_candidate_id: 789
+                        product_line: "IELTS"
+                        skill: "Reading"
+                        submission_skill_id: "abc-123"
+                        question_id: "q-42"
+                      occurred_at: "2026-03-16T10:05:30Z"
+                    - event: submit_test_skill
+                      screen: submit_test_skill
+                      user_id: 456
+                      batch_id: 123
+                      properties:
+                        batch_id: 123
+                        batch_candidate_id: 789
+                        product_line: "IELTS"
+                        skill: "Reading"
+                        submission_skill_id: "abc-123"
+                        submit_by: "Candidate"
+                      occurred_at: "2026-03-16T10:30:00Z"
+      responses:
+        "200":
+          description: Events accepted for async processing
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+              example:
+                success: true
+                message: 2 events accepted
+        "422":
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/monitoring/queue-stats:
+    get:
+      tags:
+        - Monitoring
+      summary: Get queue statistics
+      description: Returns current Redis queue size and dead letter queue size.
+      security:
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Queue statistics
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/QueueStats"
+              example:
+                success: true
+                message: ok
+                data:
+                  queue_size: 1234
+                  dead_letter_size: 5
+        "401":
+          description: Unauthorized - missing or invalid API key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                success: false
+                message: Unauthorized
+                error: invalid api key
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT token from the Exam Platform
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+      description: Internal API key for monitoring endpoints
+
+  schemas:
+    CreateTrackingEventRequest:
+      type: object
+      required:
+        - event
+        - screen
+        - user_id
+      properties:
+        event:
+          type: string
+          maxLength: 100
+          description: "Event name (e.g. click_action_test_direction, join_test)"
+          example: click_action_test_direction
+        screen:
+          type: string
+          maxLength: 100
+          description: "Screen where event occurred (e.g. test_direction, test_room)"
+          example: test_direction
+        user_id:
+          type: integer
+          format: int64
+          description: User ID
+          example: 456
+        batch_id:
+          type: integer
+          format: int64
+          nullable: true
+          description: Batch ID (optional)
+          example: 123
+        properties:
+          type: object
+          additionalProperties: true
+          description: "Dynamic event properties (product_line, skill, etc.)"
+          example:
+            product_line: "IELTS"
+            action_test_direction: continue
+        occurred_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: "Client-side event timestamp (ISO 8601). Defaults to server time if omitted."
+          example: "2026-03-11T10:00:00Z"
+
+    CreateBatchTrackingEventRequest:
+      type: object
+      required:
+        - events
+      properties:
+        events:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            $ref: "#/components/schemas/CreateTrackingEventRequest"
+
+    QueueStats:
+      type: object
+      properties:
+        queue_size:
+          type: integer
+          format: int64
+          description: Number of events in the Redis buffer queue
+          example: 1234
+        dead_letter_size:
+          type: integer
+          format: int64
+          description: Number of events in the dead letter queue
+          example: 5
+
+    SuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: ok
+        data:
+          type: object
+
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        message:
+          type: string
+          example: Validation failed
+        error:
+          description: Error details

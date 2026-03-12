@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"event-tracking-service/config"
 	"event-tracking-service/internal/httpserver"
+	"event-tracking-service/internal/repositories"
 	"event-tracking-service/internal/scheduler"
+	"event-tracking-service/internal/services"
 	"event-tracking-service/pkg/database"
 	"event-tracking-service/pkg/observe"
-	"context"
 	"log"
 
 	"go.uber.org/zap"
@@ -41,8 +43,13 @@ func main() {
 		}
 	}
 
+	// Initialize services
+	eventBuffer := services.NewEventBuffer(dbConns.Redis, cfg, zapLogger)
+	trackingEventRepo := repositories.NewTrackingEventRepository(dbConns.DB)
+	eventProcessor := services.NewEventProcessor(eventBuffer, trackingEventRepo, cfg, zapLogger)
+
 	// Initialize scheduler
-	sched, err := scheduler.NewScheduler(dbConns.Redis, cfg, zapLogger)
+	sched, err := scheduler.NewScheduler(dbConns.Redis, cfg, zapLogger, eventProcessor)
 	if err != nil {
 		zapLogger.Fatal("Failed to create scheduler", zap.Error(err))
 	}
@@ -60,7 +67,7 @@ func main() {
 
 	zapLogger.Info("Starting HTTP server", zap.String("port", cfg.Server.Port))
 
-	if err := httpserver.StartHTTPServer(cfg, zapLogger); err != nil {
+	if err := httpserver.StartHTTPServer(cfg, zapLogger, eventBuffer); err != nil {
 		zapLogger.Fatal("Failed to start HTTP server", zap.Error(err))
 	}
 }

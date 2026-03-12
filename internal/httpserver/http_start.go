@@ -1,20 +1,22 @@
 package httpserver
 
 import (
+	"context"
+	"errors"
 	"event-tracking-service/config"
 	"event-tracking-service/internal/handlers"
+	"event-tracking-service/internal/middleware"
+	"event-tracking-service/internal/services"
 	"event-tracking-service/pkg/common"
 	"event-tracking-service/pkg/database"
 	"event-tracking-service/pkg/observe"
-	"context"
-	"errors"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
-	"github.com/getsentry/sentry-go/gin"
+	sentrygin "github.com/getsentry/sentry-go/gin"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
@@ -23,7 +25,7 @@ const (
 	shutdownTimeout = 10 * time.Second
 )
 
-func StartHTTPServer(cfg *config.Config, logger *zap.Logger) error {
+func StartHTTPServer(cfg *config.Config, logger *zap.Logger, eventBuffer *services.EventBuffer) error {
 	configureGinMode(cfg.Server.Env)
 
 	conn, err := database.NewConnections(cfg)
@@ -34,7 +36,7 @@ func StartHTTPServer(cfg *config.Config, logger *zap.Logger) error {
 
 	server := New(cfg)
 	registerMiddleware(server.Engine(), cfg, logger)
-	registerRoutes(server.Engine(), conn, cfg)
+	registerRoutes(server.Engine(), conn, cfg, logger, eventBuffer)
 
 	serverErrors := make(chan error, 1)
 	go launchServerAsync(server, serverErrors)
@@ -99,9 +101,11 @@ func registerMiddleware(router *gin.Engine, cfg *config.Config, logger *zap.Logg
 	router.Use(observe.LoggingMiddleware(logger))
 }
 
-func registerRoutes(router *gin.Engine, conn *database.Connections, cfg *config.Config) {
+func registerRoutes(router *gin.Engine, conn *database.Connections, cfg *config.Config, logger *zap.Logger, eventBuffer *services.EventBuffer) {
 	healthCheckHandler := handlers.NewHealthCheckHandler()
 	docsHandler := handlers.NewDocsHandler()
+	trackingEventHandler := handlers.NewTrackingEventHandler(eventBuffer, logger, cfg.EventBuffer.SensitiveFields)
+	monitoringHandler := handlers.NewMonitoringHandler(eventBuffer, logger)
 
 	router.GET("/health", healthCheckHandler.Health)
 
@@ -111,8 +115,17 @@ func registerRoutes(router *gin.Engine, conn *database.Connections, cfg *config.
 
 	api := router.Group("/api/v1/")
 	{
-		// TODO: Register your routes here
-		_ = api
+		events := api.Group("/events")
+		{
+			events.POST("", trackingEventHandler.Create)
+			events.POST("/batch", trackingEventHandler.CreateBatch)
+		}
+
+		monitoring := api.Group("/monitoring")
+		monitoring.Use(middleware.RequiredApiKeyInternal())
+		{
+			monitoring.GET("/queue-stats", monitoringHandler.QueueStats)
+		}
 	}
 
 	router.NoRoute(func(c *gin.Context) {

@@ -96,10 +96,10 @@ Manual offset commit — chỉ commit sau khi DB write thành công (at-least-on
   "screen": "test_direction",
   "user_id": 456,
   "batch_id": 123,
-  "time_log": "2026-03-11T10:00:00Z",
+  "occurred_at": "2026-03-11T10:00:00Z",
   "properties": {
-    "product_line_id": 1,
-    "skill_id": 1,
+    "product_line": "IELTS",
+    "skill": "Listening",
     "action_test_direction": "continue"
   }
 }
@@ -116,8 +116,8 @@ Manual offset commit — chỉ commit sau khi DB write thành công (at-least-on
 | 5 | Test Room | `exit_test` | IELTS, TOEIC | 4 skills | - |
 | 6 | Test Room | `change_part` | IELTS, TOEIC | 4 skills | `part_id`, `from_part`, `to_part` |
 | 7 | Test Room | `change_question` | IELTS, TOEIC | 4 skills | `question_id`, `position` |
-| 8 | Test Room | `start_skill` | IELTS, TOEIC | 4 skills | `skill_id` |
-| 9 | Test Room | `submit_skill` | IELTS, TOEIC | 4 skills | `skill_id` |
+| 8 | Test Room | `start_skill` | IELTS, TOEIC | 4 skills | `skill` |
+| 9 | Test Room | `submit_skill` | IELTS, TOEIC | 4 skills | `skill` |
 | 10 | Test Room | `focus_page` | IELTS, TOEIC | 4 skills | - |
 | 11 | Test Room | `un_focus_page` | IELTS, TOEIC | 4 skills | - |
 | 12 | Test Room | `over_timer` | IELTS, TOEIC | 4 skills | - |
@@ -194,7 +194,7 @@ func (p *Producer) Close() error
 Config cho Writer:
 - `RequiredAcks = kafka.RequireAll` (-1) — đợi tất cả ISR ack
 - `BatchTimeout = 10ms` — low latency cho async produce
-- `Async = false` — synchronous để đảm bảo delivery trước khi trả 202
+- `Async = false` — synchronous để đảm bảo delivery trước khi trả 200
 
 #### 1.3 Kafka Consumer
 
@@ -281,7 +281,7 @@ CREATE TABLE IF NOT EXISTS tracking_events (
     batch_id      BIGINT,                          -- nullable, một số event không có batch
     properties    JSONB        DEFAULT '{}',        -- chỉ chứa dynamic fields
     meta_data     JSONB        DEFAULT '{}',
-    time_log      TIMESTAMPTZ  NOT NULL,
+    occurred_at      TIMESTAMPTZ  NOT NULL,
     created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
@@ -289,7 +289,7 @@ CREATE INDEX idx_tracking_events_event ON tracking_events (event);
 CREATE INDEX idx_tracking_events_screen ON tracking_events (screen);
 CREATE INDEX idx_tracking_events_user_id ON tracking_events (user_id);
 CREATE INDEX idx_tracking_events_batch_id ON tracking_events (batch_id);
-CREATE INDEX idx_tracking_events_time_log ON tracking_events (time_log);
+CREATE INDEX idx_tracking_events_occurred_at ON tracking_events (occurred_at);
 ```
 
 #### 2.2 GORM Model
@@ -305,7 +305,7 @@ type TrackingEvent struct {
     BatchID    *int64         `gorm:"column:batch_id" json:"batch_id,omitempty"`  // nullable
     Properties common.JSONMap `gorm:"column:properties;type:jsonb;default:'{}'" json:"properties"`
     MetaData   common.JSONMap `gorm:"column:meta_data;type:jsonb;default:'{}'" json:"meta_data"`
-    TimeLog    time.Time      `gorm:"column:time_log;type:timestamptz;not null" json:"time_log"`
+    OccurredAt    time.Time      `gorm:"column:occurred_at;type:timestamptz;not null" json:"occurred_at"`
     CreatedAt  time.Time      `gorm:"column:created_at;autoCreateTime" json:"created_at"`
 }
 
@@ -325,7 +325,7 @@ type CreateTrackingEventRequest struct {
     UserID     int64                  `json:"user_id" binding:"required"`
     BatchID    *int64                 `json:"batch_id,omitempty"`
     Properties map[string]interface{} `json:"properties,omitempty"`    // chỉ dynamic fields
-    TimeLog    *string                `json:"time_log,omitempty"`      // ISO 8601, default = now()
+    OccurredAt    *string                `json:"occurred_at,omitempty"`      // ISO 8601, default = now()
 }
 
 type CreateBatchTrackingEventRequest struct {
@@ -404,7 +404,7 @@ Luồng xử lý:
 1. Validate request (Gin binding)
 2. Enrich metadata: gom IP, User-Agent, Device từ request headers vào `meta_data`
 3. Produce to Kafka
-4. Trả 202 Accepted
+4. Trả 200 OK
 
 #### 3.3 Routes
 
@@ -553,7 +553,7 @@ Cập nhật health check endpoint để kiểm tra:
 // - Mock kafka.Consumer + repository, verify batch processing & DLQ logic
 
 // internal/handlers/tracking_event_handler_test.go
-// - Mock EventProducer, test validation & 202 response
+// - Mock EventProducer, test validation & 200 response
 
 // pkg/kafka/producer_test.go
 // pkg/kafka/consumer_test.go
@@ -668,7 +668,7 @@ Step 7: Testing
 
 | Aspect | Redis (plan cũ) | Kafka (plan mới) |
 |--------|----------------|-----------------|
-| Latency to client | ~1ms | ~5-10ms (vẫn OK cho 202 Accepted) |
+| Latency to client | ~1ms | ~5-10ms (vẫn OK cho 200 OK) |
 | Processing delay | 0-2 phút (polling) | ~5 giây (continuous consume) |
 | Durability | Redis AOF (risk mất data) | Replication (rất bền) |
 | Horizontal scaling | Distributed lock | Consumer group tự balance |
@@ -691,14 +691,14 @@ Gửi 1 event.
   "user_id": 456,
   "batch_id": 123,
   "properties": {
-    "product_line_id": 1,
+    "product_line": "IELTS",
     "action_test_direction": "continue"
   },
-  "time_log": "2026-03-11T10:00:00Z"
+  "occurred_at": "2026-03-11T10:00:00Z"
 }
 ```
 
-**Response:** `202 Accepted`
+**Response:** `200 OK`
 ```json
 {
   "message": "Event accepted",
@@ -719,22 +719,22 @@ Gửi nhiều events (max 100).
       "screen": "test_direction",
       "user_id": 456,
       "batch_id": 123,
-      "properties": { "product_line_id": 1 },
-      "time_log": "2026-03-11T10:00:00Z"
+      "properties": { "product_line": "IELTS" },
+      "occurred_at": "2026-03-11T10:00:00Z"
     },
     {
       "event": "click_agree_exam_regulation",
       "screen": "regulation",
       "user_id": 456,
       "batch_id": 123,
-      "properties": { "product_line_id": 1 },
-      "time_log": "2026-03-11T10:00:05Z"
+      "properties": { "product_line": "IELTS" },
+      "occurred_at": "2026-03-11T10:00:05Z"
     }
   ]
 }
 ```
 
-**Response:** `202 Accepted`
+**Response:** `200 OK`
 ```json
 {
   "message": "2 events accepted",
@@ -772,6 +772,6 @@ Gửi nhiều events (max 100).
 1. **Hybrid design**: `user_id`, `batch_id` là dedicated columns (query thường xuyên, native index). Các dynamic fields (`action_test_direction`, `part_id`...) vẫn nằm trong `properties` JSONB — không cần migrate khi thêm event mới
 2. **At-least-once delivery**: Manual offset commit sau DB write → có thể có duplicate khi consumer restart. Dùng UUID primary key + upsert nếu cần exactly-once
 3. **Backward compatible**: Service Go chạy song song với Laravel, không cần migrate data cũ
-4. **Performance**: Kafka produce ~5-10ms vẫn OK cho 202 Accepted pattern
+4. **Performance**: Kafka produce ~5-10ms vẫn OK cho 200 OK pattern
 5. **Observability**: Trace context propagation qua Kafka headers giữ distributed tracing liền mạch
 6. **Infrastructure**: Cần Kafka cluster (có thể dùng managed service: Confluent Cloud, AWS MSK, Redpanda)

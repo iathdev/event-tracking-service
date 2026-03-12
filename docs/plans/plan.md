@@ -31,35 +31,16 @@ Mỗi event đều có các properties chung:
   "screen": "test_direction",
   "user_id": 456,
   "batch_id": 123,
-  "batch_candidate_id": 789,
-  "time_log": "2026-03-11T10:00:00Z",
+  "occurred_at": "2026-03-11T10:00:00Z",
   "properties": {
-    "product_line_id": 1,
-    "skill_id": 1,
+    "product_line": "IELTS",
+    "skill": "Listening",
     "action_test_direction": "continue"
   }
 }
 ```
 
-### Bảng event theo màn hình
-
-| # | Screen | Event Name | Product Line | Skill | Event Properties |
-|---|--------|-----------|-------------|-------|-----------------|
-| 1 | Test Direction | `click_action_test_direction` | IELTS, TOEIC | 4 skills | `action_test_direction`: cancel/continue |
-| 2 | Regulation | `click_agree_exam_regulation` | IELTS, TOEIC | 4 skills | `action_regulation`: agree |
-| 3 | Check Audio | `click_continue_audio` | IELTS, TOEIC | Listening | - |
-| 4 | Test Room | `join_test` | IELTS, TOEIC | 4 skills | - |
-| 5 | Test Room | `exit_test` | IELTS, TOEIC | 4 skills | - |
-| 6 | Test Room | `change_part` | IELTS, TOEIC | 4 skills | `part_id`, `from_part`, `to_part` |
-| 7 | Test Room | `change_question` | IELTS, TOEIC | 4 skills | `question_id`, `position` |
-| 8 | Test Room | `start_skill` | IELTS, TOEIC | 4 skills | `skill_id` |
-| 9 | Test Room | `submit_skill` | IELTS, TOEIC | 4 skills | `skill_id` |
-| 10 | Test Room | `focus_page` | IELTS, TOEIC | 4 skills | - |
-| 11 | Test Room | `un_focus_page` | IELTS, TOEIC | 4 skills | - |
-| 12 | Test Room | `over_timer` | IELTS, TOEIC | 4 skills | - |
-| 13 | Test Room | `network_offline` | IELTS, TOEIC | 4 skills | - |
-| 14 | Test Room | `submit_by_admin` | IELTS, TOEIC | 4 skills | - |
-
+- [Danh sách Event & Properties](./events.md)
 ---
 
 ## Kiến trúc tổng quan
@@ -88,56 +69,80 @@ Mỗi event đều có các properties chung:
 
 ### Phase 1: Database & Models (Ưu tiên cao)
 
-#### 1.1 Tạo migration PostgreSQL
+#### 1.1 TimescaleDB Setup
 
-**File**: `migrations/001_create_tracking_events_table.sql`
+Sử dụng **TimescaleDB** (extension trên PostgreSQL) cho time-series event data — tự động partition theo thời gian, retention policy tự xóa data cũ.
+
+**Docker**: `timescale/timescaledb:latest-pg16`
+
+**File**: `migrations/001_create_timescaledb_extension.up.sql`
+
+```sql
+CREATE EXTENSION IF NOT EXISTS timescaledb;
+```
+
+#### 1.2 Tạo migration — Hypertable
+
+**File**: `migrations/002_create_tracking_events_table.up.sql`
 
 ```sql
 CREATE TABLE IF NOT EXISTS tracking_events (
-    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    event         VARCHAR(100) NOT NULL,          -- Tên event (vd: click_action_test_direction, join_test)
-    screen        VARCHAR(100) NOT NULL,          -- Màn hình phát sinh event: test_direction, regulation, test_room, ...
-    user_id       BIGINT       NOT NULL,          -- ID user thực hiện event
-    batch_id      BIGINT,                         -- ID batch (nullable, một số event không có batch)
-    batch_candidate_id BIGINT,                    -- ID batch_candidate (nullable, gắn thí sinh với đợt thi)
-    properties    JSONB        DEFAULT '{}',      -- Dữ liệu dynamic theo từng loại event (product_line_id, skill_id, submission_id, ...)
-    meta_data     JSONB        DEFAULT '{}',      -- Metadata bổ sung từ request: IP, UserAgent, Device, OS, Browser...
-    time_log      TIMESTAMPTZ  NOT NULL,          -- Thời điểm event xảy ra phía client (ISO 8601)
-    created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW()  -- Thời điểm record được tạo trong DB
+    id                 UUID         NOT NULL DEFAULT gen_random_uuid(),
+    event              VARCHAR(100) NOT NULL,
+    screen             VARCHAR(100) NOT NULL,
+    user_id            BIGINT       NOT NULL,
+    batch_id           BIGINT,
+    properties         JSONB        DEFAULT '{}',
+    meta_data          JSONB        DEFAULT '{}',git 
+    occurred_at           TIMESTAMPTZ  NOT NULL,
+    created_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (id, occurred_at)          -- Composite PK: hypertable yêu cầu partition column trong PK
+);
+
+-- Convert to hypertable, chunk mỗi 14 ngày
+SELECT create_hypertable(
+    'tracking_events',
+    'occurred_at',
+    chunk_time_interval => INTERVAL '14 days',
+    if_not_exists => TRUE
 );
 
 CREATE INDEX idx_tracking_events_event ON tracking_events (event);
 CREATE INDEX idx_tracking_events_screen ON tracking_events (screen);
 CREATE INDEX idx_tracking_events_user_id ON tracking_events (user_id);
 CREATE INDEX idx_tracking_events_batch_id ON tracking_events (batch_id);
-CREATE INDEX idx_tracking_events_batch_candidate_id ON tracking_events (batch_candidate_id);
-CREATE INDEX idx_tracking_events_time_log ON tracking_events (time_log);
+CREATE INDEX idx_tracking_events_occurred_at ON tracking_events (occurred_at);
+
+-- Tự động xóa chunks cũ hơn 6 tháng
+SELECT add_retention_policy('tracking_events', INTERVAL '6 months', if_not_exists => TRUE);
 ```
 
-#### 1.2 GORM Model
+> **TimescaleDB config**:
+> - **Chunk interval**: 14 ngày — mỗi chunk chứa 2 tuần data
+> - **Retention policy**: 6 tháng — tự động drop chunks cũ hơn 6 tháng
+> - **Composite PK**: `(id, occurred_at)` — bắt buộc vì hypertable cần partition column trong primary key
+
+#### 1.3 GORM Model
 
 **File**: `internal/models/tracking_event.go`
 
 ```go
 type TrackingEvent struct {
-    models.BaseModel
-    Event      string         `gorm:"column:event;type:varchar(100);not null" json:"event"`
-    Screen     string         `gorm:"column:screen;type:varchar(100);not null" json:"screen"`
-    UserID     int64          `gorm:"column:user_id;not null" json:"user_id"`
-    BatchID           *int64         `gorm:"column:batch_id" json:"batch_id,omitempty"`                    // nullable
-    BatchCandidateID  *int64         `gorm:"column:batch_candidate_id" json:"batch_candidate_id,omitempty"` // nullable
-    Properties        common.JSONMap `gorm:"column:properties;type:jsonb;default:'{}'" json:"properties"`
-    MetaData   common.JSONMap `gorm:"column:meta_data;type:jsonb;default:'{}'" json:"meta_data"`
-    TimeLog    time.Time      `gorm:"column:time_log;type:timestamptz;not null" json:"time_log"`
-    CreatedAt  time.Time      `gorm:"column:created_at;autoCreateTime" json:"created_at"`
-}
-
-func (TrackingEvent) TableName() string {
-    return "tracking_events"
+    BaseModel
+    Event            string         `gorm:"column:event;type:varchar(100);not null" json:"event"`
+    Screen           string         `gorm:"column:screen;type:varchar(100);not null" json:"screen"`
+    UserID           int64          `gorm:"column:user_id;not null" json:"user_id"`
+    BatchID          *int64         `gorm:"column:batch_id" json:"batch_id,omitempty"`
+    Properties       common.JSONMap `gorm:"column:properties;type:jsonb;default:'{}'" json:"properties"`
+    MetaData         common.JSONMap `gorm:"column:meta_data;type:jsonb;default:'{}'" json:"meta_data"`
+    OccurredAt          time.Time      `gorm:"primaryKey;column:occurred_at;type:timestamptz;not null" json:"occurred_at"`
+    CreatedAt        time.Time      `gorm:"column:created_at;autoCreateTime" json:"created_at"`
 }
 ```
 
-> **Lưu ý**: `user_id` và `batch_id` là dedicated columns (query thường xuyên, native B-tree index). Các dynamic fields (`product_line_id`, `skill_id`, `submission_id`,...) nằm trong `properties` JSONB — không cần migrate DB khi thêm field mới.
+> **Lưu ý**:
+> - `OccurredAt` có tag `primaryKey` tạo composite PK `(id, occurred_at)` cho TimescaleDB hypertable
+> - `user_id`, `batch_id` là dedicated columns (query thường xuyên, native index). Dynamic fields nằm trong `properties` JSONB
 
 ---
 
@@ -203,9 +208,8 @@ type CreateTrackingEventRequest struct {
     Screen     string                 `json:"screen" binding:"required"`
     UserID     int64                  `json:"user_id" binding:"required"`
     BatchID          *int64                 `json:"batch_id,omitempty"`
-    BatchCandidateID *int64                 `json:"batch_candidate_id,omitempty"`
-    Properties       map[string]interface{} `json:"properties,omitempty"`    // dynamic fields: product_line_id, skill_id, submission_id, ...
-    TimeLog    *string                `json:"time_log,omitempty"`      // ISO 8601, default = now()
+    Properties       map[string]interface{} `json:"properties,omitempty"`    // dynamic fields: product_line, skill, submission_id, ...
+    OccurredAt    *string                `json:"occurred_at,omitempty"`      // ISO 8601, default = now()
 }
 
 // Batch request - client gửi nhiều events 1 lần
@@ -232,7 +236,7 @@ Luồng xử lý:
 1. Validate request (binding)
 2. Enrich metadata: gom IP, User-Agent, Device từ request header vào `meta_data` JSONB
 3. Push vào Redis buffer (không ghi DB trực tiếp)
-4. Trả 202 Accepted (async processing)
+4. Trả 200 OK (async processing)
 
 #### 3.3 Routes
 
@@ -313,7 +317,6 @@ func (r *TrackingEventRepository) BulkInsert(ctx context.Context, events []model
 
 func (r *TrackingEventRepository) GetByUserID(ctx context.Context, userID int64) ([]models.TrackingEvent, error)
 func (r *TrackingEventRepository) GetByBatchID(ctx context.Context, batchID int64) ([]models.TrackingEvent, error)
-func (r *TrackingEventRepository) GetByBatchCandidateID(ctx context.Context, batchCandidateID int64) ([]models.TrackingEvent, error)
 func (r *TrackingEventRepository) DeleteOlderThan(ctx context.Context, days int) (int64, error)
 ```
 
@@ -349,7 +352,8 @@ event-tracking-service/
 ├── config/
 │   └── config.go                          # + EventBufferConfig
 ├── migrations/
-│   └── 001_create_tracking_events_table.sql
+│   ├── 001_create_timescaledb_extension.sql
+│   └── 002_create_tracking_events_table.sql
 ├── internal/
 │   ├── models/
 │   │   ├── base_model.go                  # (existing)
@@ -439,16 +443,15 @@ Gửi 1 event.
   "screen": "test_direction",
   "user_id": 456,
   "batch_id": 123,
-  "batch_candidate_id": 789,
   "properties": {
-    "product_line_id": 1,
+    "product_line": "IELTS",
     "action_test_direction": "continue"
   },
-  "time_log": "2026-03-11T10:00:00Z"
+  "occurred_at": "2026-03-11T10:00:00Z"
 }
 ```
 
-**Response:** `202 Accepted`
+**Response:** `200 OK`
 ```json
 {
   "message": "Event accepted",
@@ -469,24 +472,22 @@ Gửi nhiều events (max 100).
       "screen": "test_direction",
       "user_id": 456,
       "batch_id": 123,
-      "batch_candidate_id": 789,
-      "properties": { "product_line_id": 1, "action_test_direction": "continue" },
-      "time_log": "2026-03-11T10:00:00Z"
+      "properties": { "product_line": "IELTS", "action_test_direction": "continue" },
+      "occurred_at": "2026-03-11T10:00:00Z"
     },
     {
       "event": "click_agree_exam_regulation",
       "screen": "regulation",
       "user_id": 456,
       "batch_id": 123,
-      "batch_candidate_id": 789,
-      "properties": { "product_line_id": 1, "action_regulation": "agree" },
-      "time_log": "2026-03-11T10:00:05Z"
+      "properties": { "product_line": "IELTS", "action_regulation": "agree" },
+      "occurred_at": "2026-03-11T10:00:05Z"
     }
   ]
 }
 ```
 
-**Response:** `202 Accepted`
+**Response:** `200 OK`
 ```json
 {
   "message": "2 events accepted",
@@ -513,7 +514,7 @@ Gửi nhiều events (max 100).
 
 | Aspect | Laravel (hiện tại) | Go (mới) |
 |--------|-------------------|----------|
-| Database | MySQL | PostgreSQL |
+| Database | MySQL | TimescaleDB (PostgreSQL 16) |
 | Buffer | Redis (RPUSH/LPOP) | Redis (RPUSH/LPOP) — giống |
 | Batch size | 1,500 | 1,500 (configurable) |
 | Schedule | Mỗi 3 phút | Mỗi 2 phút (configurable) |
@@ -527,8 +528,9 @@ Gửi nhiều events (max 100).
 
 ## Lưu ý quan trọng
 
-1. **Hybrid design**: `user_id`, `batch_id`, `batch_candidate_id` là dedicated columns (query thường xuyên, native index). Các dynamic fields vẫn nằm trong `properties JSONB` — không cần thay đổi schema khi thêm event mới
-2. **Backward compatible**: Service Go chạy song song với Laravel, không cần migrate data cũ
-3. **Performance**: Go + Redis buffer đảm bảo latency thấp cho client (202 Accepted ngay)
-4. **Scalability**: Có thể scale horizontal scheduler bằng distributed lock
-5. **Observability**: Đã có sẵn OTel + Sentry trong skeleton
+1. **TimescaleDB**: Hypertable tự động partition theo `occurred_at` (chunk 14 ngày), retention policy xóa data cũ hơn 6 tháng. Go code không cần thay đổi — dùng GORM + PostgreSQL driver bình thường
+2. **Hybrid design**: `user_id`, `batch_id` là dedicated columns (query thường xuyên, native index). Các dynamic fields (bao gồm `batch_candidate_id`) nằm trong `properties JSONB` — không cần thay đổi schema khi thêm event mới
+3. **Backward compatible**: Service Go chạy song song với Laravel, không cần migrate data cũ
+4. **Performance**: Go + Redis buffer đảm bảo latency thấp cho client (200 OK ngay)
+5. **Scalability**: Có thể scale horizontal scheduler bằng distributed lock
+6. **Observability**: Đã có sẵn OTel + Sentry trong skeleton
